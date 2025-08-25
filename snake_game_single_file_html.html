@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Snake — Fullscreen Dragon Classic</title>
+<style>
+  :root{ --bg:#081018; --panel:rgba(0,0,0,0.45); --accent:#ffd166; --snake1:#7be495; --snake2:#3bbf7a; }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,#02040a,#081018);font-family:monospace;color:#e6f2ff}
+  .ui{position:fixed;left:16px;top:16px;z-index:60;display:flex;gap:8px;align-items:center}
+  button{background:var(--panel);border:1px solid rgba(255,255,255,.06);color:var(--accent);padding:.5rem .7rem;border-radius:8px;cursor:pointer}
+  .info{position:fixed;right:16px;top:16px;z-index:60;background:var(--panel);padding:.5rem .7rem;border-radius:8px;border:1px solid rgba(255,255,255,.04)}
+  #game{display:block;width:100vw;height:100vh;image-rendering:pixelated}
+  /* small help */
+  .help{position:fixed;left:16px;bottom:16px;background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));padding:.45rem .6rem;border-radius:8px;border:1px solid rgba(255,255,255,.03)}
+</style>
+</head>
+<body>
+  <div class="ui">
+    <button id="fs">⛶ Fullscreen</button>
+    <button id="start">Start</button>
+    <button id="pause">Pause</button>
+    <button id="restart">Restart</button>
+    <button id="classic">Nokia Grid</button>
+  </div>
+  <div class="info">Score: <span id="score">0</span> &nbsp; High: <span id="high">0</span></div>
+  <canvas id="game"></canvas>
+  <div class="help">Arrows / WASD • Space = Pause • C = clear high score</div>
+
+<script>
+// Fullscreen Dragon-style Nokia Snake
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const highEl = document.getElementById('high');
+const startBtn = document.getElementById('start');
+const pauseBtn = document.getElementById('pause');
+const restartBtn = document.getElementById('restart');
+const fsBtn = document.getElementById('fs');
+const classicBtn = document.getElementById('classic');
+
+// responsive grid - emulate classic but scale with screen
+let CELL = 12; // will be adjusted
+let COLS, ROWS;
+let snake, dir, nextDir, food, score, high, playing, timerId, speedMs = 140, useClassicGrid = false;
+
+function resizeCanvas(){
+  canvas.width = Math.floor(window.innerWidth / devicePixelRatio);
+  canvas.height = Math.floor(window.innerHeight / devicePixelRatio);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  // choose CELL to fit ~32 cols on smaller screens
+  if(useClassicGrid){ CELL = 8; } else {
+    const targetCols = Math.max(20, Math.min(40, Math.floor(window.innerWidth/30)));
+    CELL = Math.max(6, Math.floor(window.innerWidth/targetCols));
+  }
+  COLS = Math.floor(canvas.width / CELL);
+  ROWS = Math.floor(canvas.height / CELL);
+}
+window.addEventListener('resize', ()=>{ resizeCanvas(); draw(); });
+
+// Audio
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+const audioCtx = AudioCtx ? new AudioCtx() : null;
+function beep(freq, t=0.06){ if(!audioCtx) return; const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.connect(g); g.connect(audioCtx.destination); o.type='square'; o.frequency.value=freq; g.gain.setValueAtTime(0.0001,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.08,audioCtx.currentTime+0.01); o.start(); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+t); o.stop(audioCtx.currentTime+t+0.02); }
+
+function loadHigh(){ high = Number(localStorage.getItem('dragonSnakeHigh')||0); highEl.textContent = high; }
+function saveHigh(){ if(score>high){ high=score; localStorage.setItem('dragonSnakeHigh', high); highEl.textContent=high; }}
+
+function reset(){
+  resizeCanvas();
+  snake = [ {x:Math.floor(COLS/2), y:Math.floor(ROWS/2)}, {x:Math.floor(COLS/2)-1, y:Math.floor(ROWS/2)}, {x:Math.floor(COLS/2)-2, y:Math.floor(ROWS/2)} ];
+  dir = {x:1,y:0}; nextDir = {x:1,y:0};
+  score=0; playing=false; placeFood(); updateHUD(); draw();
+}
+
+function placeFood(){
+  let p; do { p = { x: Math.floor(Math.random()*COLS), y: Math.floor(Math.random()*ROWS) }; }
+  while(snake.some(s=>s.x===p.x && s.y===p.y));
+  food = p;
+}
+
+function updateHUD(){ scoreEl.textContent = score; }
+
+function step(){
+  dir = nextDir;
+  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+  // wrap edges in dragon mode (more forgiving), but in classic grid walls kill
+  if(!useClassicGrid){ head.x = (head.x + COLS) % COLS; head.y = (head.y + ROWS) % ROWS; }
+  else if(head.x<0 || head.x>=COLS || head.y<0 || head.y>=ROWS) return die();
+  if(snake.some(s=>s.x===head.x && s.y===head.y)) return die();
+  snake.unshift(head);
+  if(head.x===food.x && head.y===food.y){ score+=10; beep(900,0.08); placeFood(); saveHigh(); updateHUD(); if(score%50===0) speedMs = Math.max(60, speedMs-8); }
+  else snake.pop();
+  draw();
+}
+
+function die(){ beep(160,0.3); playing=false; clearInterval(timerId); flashDeath(); }
+function flashDeath(){ ctx.save(); ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.restore(); }
+
+// Drawing: background dragon graphic + grid + snake + food
+function draw(){
+  // clear
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // draw dragon decorative background (procedural silhouette)
+  drawDragonBackdrop();
+  // draw grid (subtle)
+  drawGrid();
+  // draw food
+  drawCell(food.x, food.y, '#ff5d6c');
+  // draw snake with gradient and scales effect
+  for(let i=snake.length-1;i>=0;i--){ const s=snake[i]; drawSnakeSegment(s.x,s.y,i===0); }
+}
+
+function drawGrid(){ ctx.save(); ctx.globalAlpha=0.06; ctx.strokeStyle='#ffffff'; ctx.lineWidth=1; for(let x=0;x<=COLS;x++){ ctx.beginPath(); ctx.moveTo(x*CELL,0); ctx.lineTo(x*CELL, ROWS*CELL); ctx.stroke(); } for(let y=0;y<=ROWS;y++){ ctx.beginPath(); ctx.moveTo(0,y*CELL); ctx.lineTo(COLS*CELL, y*CELL); ctx.stroke(); } ctx.restore(); }
+
+function drawCell(cx,cy,color){ ctx.fillStyle=color; ctx.fillRect(cx*CELL+1, cy*CELL+1, CELL-2, CELL-2); }
+
+function drawSnakeSegment(cx,cy,head=false){ const x = cx*CELL, y=cy*CELL; const grad = ctx.createLinearGradient(x,y,x+CELL,y+CELL); grad.addColorStop(0,'#7be495'); grad.addColorStop(1,'#3bbf7a'); ctx.fillStyle = head ? '#fff' : grad; // draw rounded pixel-like
+  ctx.beginPath(); roundedRect(ctx, x+1, y+1, CELL-2, CELL-2, Math.max(2, CELL/5)); ctx.fill();
+  // add scale pattern on body
+  if(!head){ ctx.save(); ctx.globalAlpha=0.12; ctx.fillStyle='#063a1b'; for(let i=0;i<3;i++){ ctx.beginPath(); const sx=x+2 + (i*(CELL-2)/3); ctx.ellipse(sx, y+CELL-3, Math.max(1, CELL/10), Math.max(1,CELL/16), 0, 0, Math.PI*2); ctx.fill(); } ctx.restore(); }
+  if(head){ // eyes
+    ctx.fillStyle='#081018'; ctx.beginPath(); ctx.arc(x+Math.floor(CELL*0.3), y+Math.floor(CELL*0.35), Math.max(1, CELL/6),0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(x+Math.floor(CELL*0.7), y+Math.floor(CELL*0.35), Math.max(1, CELL/6),0,Math.PI*2); ctx.fill(); }
+}
+
+function roundedRect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+function drawDragonBackdrop(){ // big decorative dragon silhouette across the canvas
+  ctx.save();
+  const w = canvas.width, h = canvas.height;
+  // soft glow
+  const g = ctx.createLinearGradient(0,0,w,h); g.addColorStop(0,'rgba(255,215,100,0.02)'); g.addColorStop(1,'rgba(255,80,120,0.02)'); ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
+  // dragon shape (stylized bezier curves)
+  ctx.translate(w*0.1,h*0.2);
+  ctx.scale(Math.min(w/1200, h/800), Math.min(w/1200, h/800));
+  ctx.beginPath();
+  ctx.moveTo(100,200);
+  ctx.bezierCurveTo(200,120,420,80,600,120);
+  ctx.bezierCurveTo(760,140,900,260,940,420);
+  ctx.bezierCurveTo(960,540,900,680,740,720);
+  ctx.bezierCurveTo(600,760,420,740,300,660);
+  ctx.bezierCurveTo(180,580,120,420,100,320);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0,0,900,800); grad.addColorStop(0,'rgba(255,150,60,0.06)'); grad.addColorStop(1,'rgba(110,40,160,0.06)');
+  ctx.fillStyle = grad; ctx.fill();
+  // dragon eye glow near top-right
+  ctx.beginPath(); ctx.ellipse(700,200,60,40,0,0,Math.PI*2); ctx.fillStyle='rgba(255,90,120,0.06)'; ctx.fill();
+  ctx.restore();
+}
+
+// Input
+window.addEventListener('keydown', e=>{
+  const k=e.key;
+  if(k==='ArrowUp' || k==='w' || k==='W') setDir(0,-1);
+  if(k==='ArrowDown' || k==='s' || k==='S') setDir(0,1);
+  if(k==='ArrowLeft' || k==='a' || k==='A') setDir(-1,0);
+  if(k==='ArrowRight' || k==='d' || k==='D') setDir(1,0);
+  if(k===' '){ togglePlay(); }
+  if(k==='r' || k==='R'){ restart(); }
+  if(k==='c' || k==='C'){ localStorage.removeItem('dragonSnakeHigh'); loadHigh(); }
+});
+
+function setDir(x,y){ if(x===-dir.x && y===-dir.y) return; nextDir={x,y}; }
+
+// Controls
+startBtn.onclick = ()=>{ if(!playing) start(); };
+pauseBtn.onclick = ()=>{ togglePlay(); };
+restartBtn.onclick = ()=>{ restart(); };
+fsBtn.onclick = ()=>{ if(document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); };
+classicBtn.onclick = ()=>{ useClassicGrid = !useClassicGrid; classicBtn.textContent = useClassicGrid? 'Arcade Wrap' : 'Nokia Grid'; resizeCanvas(); reset(); };
+
+function start(){ if(playing) return; playing=true; timerId = setInterval(step, speedMs); beep(600,0.06); }
+function togglePlay(){ if(playing){ playing=false; clearInterval(timerId); } else start(); }
+function restart(){ clearInterval(timerId); reset(); start(); }
+
+// Init
+loadHigh(); resizeCanvas(); reset();
+</script>
+</body>
+</html>
